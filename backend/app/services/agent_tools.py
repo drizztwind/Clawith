@@ -655,12 +655,14 @@ AGENT_TOOLS = [
 
 
 # Core tools that should always be available to agents regardless of
-# DB configuration. Feishu tools are included here so that once an
-# agent is bound to a Feishu channel, it can immediately use document
-# and calendar capabilities without requiring extra Tool records.
-_ALWAYS_INCLUDE = {
+# DB configuration.
+_ALWAYS_INCLUDE_CORE = {
     "send_channel_file",
     "write_file",
+}
+# Feishu tools are ONLY included when the agent has a configured Feishu channel,
+# to avoid exposing unnecessary tools to non-Feishu agents (reduces hallucination risk).
+_FEISHU_TOOL_NAMES = {
     "send_feishu_message",
     "feishu_user_search",
     "feishu_doc_read",
@@ -671,7 +673,25 @@ _ALWAYS_INCLUDE = {
     "feishu_calendar_update",
     "feishu_calendar_delete",
 }
-_always_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _ALWAYS_INCLUDE]
+_always_core_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _ALWAYS_INCLUDE_CORE]
+_feishu_tools = [t for t in AGENT_TOOLS if t["function"]["name"] in _FEISHU_TOOL_NAMES]
+
+
+async def _agent_has_feishu(agent_id: uuid.UUID) -> bool:
+    """Check if agent has a configured Feishu channel."""
+    try:
+        from app.models.channel_config import ChannelConfig
+        async with async_session() as db:
+            r = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "feishu",
+                    ChannelConfig.is_configured == True,
+                )
+            )
+            return r.scalar_one_or_none() is not None
+    except Exception:
+        return False
 
 
 # ─── Dynamic Tool Loading from DB ──────────────────────────────
@@ -680,11 +700,12 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
     """Load enabled tools for an agent from DB (OpenAI function-calling format).
     
     Falls back to hardcoded AGENT_TOOLS if DB not ready.
-    Always includes core system tools (send_channel_file, write_file, Feishu
-    document & calendar helpers) so the agent can deliver files to users via
-    any channel and use Feishu capabilities once configured, regardless of
-    DB tool configuration.
+    Always includes core system tools (send_channel_file, write_file).
+    Feishu tools are only included when the agent has a configured Feishu channel.
     """
+    has_feishu = await _agent_has_feishu(agent_id)
+    _always_tools = _always_core_tools + (_feishu_tools if has_feishu else [])
+
     try:
         from app.models.tool import Tool, AgentTool
 
@@ -3450,7 +3471,11 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     _, token = creds
 
     # ── Load local contacts cache ─────────────────────────────────────────────
-    _cache_file = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
+    # Validate agent_id to prevent path traversal
+    _safe_id = str(agent_id).replace("..", "").replace("/", "")
+    if _safe_id != str(agent_id):
+        return "❌ Invalid agent ID"
+    _cache_file = _pl.Path(f"/data/workspaces/{_safe_id}/feishu_contacts_cache.json")
     _cached_users: list[dict] = []
     try:
         if _cache_file.exists():
@@ -3537,7 +3562,8 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_contacts_refresh(agent_id: uuid.UUID) -> None:
     """Force-clear the local contacts cache so next search re-fetches from API."""
     import pathlib as _pl
-    _cache_file = _pl.Path("/data/workspaces") / str(agent_id) / "feishu_contacts_cache.json"
+    _safe_id = str(agent_id).replace("..", "").replace("/", "")
+    _cache_file = _pl.Path("/data/workspaces") / _safe_id / "feishu_contacts_cache.json"
     try:
         if _cache_file.exists():
             _cache_file.unlink()

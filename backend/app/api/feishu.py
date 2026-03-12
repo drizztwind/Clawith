@@ -369,7 +369,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             if sender_name and sender_open_id:
                                 try:
                                     import pathlib as _pl, json as _cj, time as _ct
-                                    _cache = _pl.Path(f"/data/workspaces/{agent_id}/feishu_contacts_cache.json")
+                                    _safe_id = str(agent_id).replace("..", "").replace("/", "")
+                                    _cache = _pl.Path(f"/data/workspaces/{_safe_id}/feishu_contacts_cache.json")
                                     _cache.parent.mkdir(parents=True, exist_ok=True)
                                     _existing = {}
                                     if _cache.exists():
@@ -388,6 +389,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                         {"ts": _ct.time(), "users": list(_users.values())},
                                         ensure_ascii=False,
                                     ))
+                                    import os as _os
+                                    _os.chmod(str(_cache), 0o600)
                                 except Exception as _ce:
                                     print(f"[Feishu] Cache write failed: {_ce}")
             except Exception as e:

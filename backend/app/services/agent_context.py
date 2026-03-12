@@ -191,8 +191,25 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
     if role_description:
         parts.append(f"\n## Role\n{role_description}")
 
-    # --- Feishu Built-in Tools (injected BEFORE soul/memory so it overrides any conservative boundary) ---
-    parts.append("""
+    # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
+    _has_feishu = False
+    try:
+        from app.models.channel_config import ChannelConfig
+        from app.database import async_session as _ctx_session
+        async with _ctx_session() as _ctx_db:
+            _cfg_r = await _ctx_db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "feishu",
+                    ChannelConfig.is_configured == True,
+                )
+            )
+            _has_feishu = _cfg_r.scalar_one_or_none() is not None
+    except Exception:
+        pass
+
+    if _has_feishu:
+        parts.append("""
 ## ⚡ Pre-installed Feishu Tools
 
 The following tools are available in your toolset. **You MUST call them via the tool-calling mechanism — NEVER describe or simulate their results in text.**
